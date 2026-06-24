@@ -5,9 +5,7 @@ description: Use when user needs to clean up messy Git commit history — squash
 
 # Git History Cleanup
 
-## Overview
-
-Automate interactive rebase to squash and reword messy commits into a clean, meaningful history. Core approach: fully non-interactive execution via `GIT_SEQUENCE_EDITOR` + `GIT_EDITOR` PowerShell scripts — zero manual editing.
+Fully non-interactive rebase via `GIT_SEQUENCE_EDITOR` + `GIT_EDITOR` PowerShell scripts. Optional: per-commit diff collection for context-aware reword messages.
 
 ## When to Use
 
@@ -76,11 +74,31 @@ Create the helper scripts from templates in [scripts/](scripts/):
 
 ### Step 5: Phase 2 — Reword (non-interactive)
 
+**Optional: enrich reword messages with diff context**
+
+> **When to use:** diff context increases token consumption. Only collect diffs when:
+> - Squashed commit messages are too vague or meaningless to infer actual scope (e.g., `wip`, `update`, `fix stuff`), **or**
+> - User explicitly requests diff-enriched messages.
+>
+> If the original commit messages already describe the change clearly enough, skip this step and derive reword messages from the log alone.
+
+Before writing reword messages, run `collect-diffs.ps1` to gather per-commit stat + truncated diff:
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File <skill-dir>/scripts/collect-diffs.ps1 -StartHash <START_HASH> -EndHash <END_HASH>
+```
+
+Parameters:
+- `-StartHash` (required): exclusive base, same as the rebase range start
+- `-EndHash` (optional, default `HEAD`): inclusive end
+- `-MaxDiffLines` (optional, default `40`): max diff lines per commit to keep output manageable
+
+Read `.git/commit-diffs.txt` to understand what each squashed commit actually changed (files touched, kind of change), then write specific reword messages instead of generic ones — e.g., `chore: update ESLint and TypeScript dependencies` instead of `chore: update deps`.
+
 Update `.git/rebase-todo-plan.txt` with `reword` for commits needing new messages, `pick` for release commits:
 
 ```
-reword <new-hash1> chore: update dependencies and docs
-reword <new-hash2> feat: refactor project structure
+reword <new-hash1> chore: update ESLint and TypeScript dependencies
+reword <new-hash2> feat: refactor project structure and pipeline renames
 pick <new-hash3> Release vX.Y.Z
 ```
 
@@ -115,37 +133,14 @@ git tag -l
 
 User manually pushes with `--force-with-lease` and handles tag updates / branch deletion / backup cleanup.
 
-## Quick Reference
+## Pitfalls
 
-| Operation | Command |
-|-----------|--------|
-| Analyze history | `git log --oneline --reverse <START>..<END>` |
-| Create backup | `git branch backup/main-before-cleanup` |
-| Squash phase | `GIT_SEQUENCE_EDITOR` + plan file with `pick`/`fixup` |
-| Reword phase | `GIT_EDITOR` + counter-based message array |
-| Verify integrity | `git diff backup/... HEAD` — must be empty |
-| Recreate tags | `git tag <name> <new-hash>` |
-
-## Common Mistakes
-
-| Problem | Fix |
-|---------|-----|
-| Env vars don't persist between shell calls | Use runner `.ps1` script (`run-rebase.ps1`) |
-| UTF-8 BOM corrupts commit messages | `New-Object System.Text.UTF8Encoding($false)` |
-| Forgot to delete tags before rebase | `git tag -d` before, recreate after |
-| Commit hash duplicated or missing in todo | Each hash appears EXACTLY once |
-| Temp files left behind | Clean `.git/*.ps1`, `reword-counter.txt`, `rebase-todo-plan.txt` after |
-
-## Script Templates
-
-Ready-to-customize templates in [scripts/](scripts/): `seq-editor.ps1`, `msg-editor.ps1`, `run-rebase.ps1`. Customize per-run: commit hashes in plan file, message array in msg-editor.
+- **Env vars don't persist** between shell calls → always use `run-rebase.ps1` to set env + run rebase in one process
+- **Clean temp files** after rebase: `.git/*.ps1`, `reword-counter.txt`, `rebase-todo-plan.txt`, `commit-diffs.txt`
 
 ## Example
 
-**Before** (28 messy commits):
-```
-chore: update, chore: WIP, docs: update, wip, chore: chaos, ...
-```
+**Before** (28 messy commits): `chore: update, WIP, docs: update, wip, chaos, ...`
 
 **After** (11 clean commits):
 ```
@@ -153,11 +148,5 @@ chore: update dependencies and docs
 feat: refactor project structure and pipeline renames
 Release v1.12.0
 fix: resolve issue #24 and update dependencies
-Release v1.12.1
-chore: update dependencies and docs
-feat: improve OXLint options handling and add deny options
-feat: add respectjs4ts rules
-Release v1.13.0
-fix: improve lv() params type
-chore: refactor plugin package and update dependencies
+...
 ```
